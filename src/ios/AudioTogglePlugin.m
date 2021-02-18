@@ -2,63 +2,62 @@
 #import <AudioToolbox/AudioToolbox.h>
 #import <AVFoundation/AVFoundation.h>
 
+
+@interface AudioTogglePlugin()
+@property (nonatomic, strong) NSMutableDictionary *eventCallbacks;
+
+@end
+
 @implementation AudioTogglePlugin
-{
-    NSString *mode;
+
+- (void) pluginInitialize {
+	self.eventCallbacks = [NSMutableDictionary dictionaryWithCapacity:1];
+	[self.eventCallbacks setValue:[NSMutableArray array] forKey:@"speaker"];
+	
+	[[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(handleAudioRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
 }
+
 - (void)setAudioMode:(CDVInvokedUrlCommand *)command
 {
-    mode = [NSString stringWithFormat:@"%@", [command.arguments objectAtIndex:0]];
-    
-    AVAudioSession *session = [AVAudioSession sharedInstance];
-    
-    [self configureAVAudioSession:session];
+	NSError* __autoreleasing err = nil;
+	NSString* mode = [[NSString stringWithFormat:@"%@", [command.arguments objectAtIndex:0]] lowercaseString];
+	
+	AVAudioSession *session = [AVAudioSession sharedInstance];
+	
+	if ([mode isEqualToString:@"earpiece"]) {
+		[session setCategory:AVAudioSessionCategoryPlayAndRecord error:&err];
+		[session overrideOutputAudioPort:AVAudioSessionPortOverrideNone error:&err];
+		
+	} else if ([mode isEqualToString:@"speaker"] || [mode isEqualToString:@"ringtone"]) {
+		[session setCategory:AVAudioSessionCategoryPlayAndRecord error:&err];
+		[session overrideOutputAudioPort:AVAudioSessionPortOverrideSpeaker error:&err];
+		
+	} else if ([mode isEqualToString:@"normal"]) {
+		[session setCategory:AVAudioSessionCategorySoloAmbient error:&err];
+	}
 }
 
-- (BOOL)configureAVAudioSession:(AVAudioSession *)session {
-    BOOL success;
-    NSError* error;
-    
-    success = [session setCategory:[mode isEqualToString:@"speaker"]? AVAudioSessionCategoryPlayAndRecord: AVAudioSessionCategoryRecord
-                             error:&error];
-    if (!success) {
-        NSLog(@"AVAudioSession error setting category:%@",error);
-    }
-    else {
-        [[NSNotificationCenter defaultCenter] addObserver:self selector:@selector(didSessionRouteChange:) name:AVAudioSessionRouteChangeNotification object:nil];
-    }
-    
-    return success;
+- (void) registerListener:(CDVInvokedUrlCommand *)command {
+	NSString* eventName = command.arguments.firstObject;
+	if(self.eventCallbacks[eventName] != nil) {
+		[self.eventCallbacks[eventName] addObject:command.callbackId];
+	}
 }
 
-- (void)didSessionRouteChange:(NSNotification *)notification {
-    NSDictionary *interuptionDict = notification.userInfo;
-    NSInteger routeChangeReason = [[interuptionDict valueForKey:AVAudioSessionRouteChangeReasonKey] integerValue];
-    NSError* error;
-    
-    switch (routeChangeReason) {
-        case AVAudioSessionRouteChangeReasonCategoryChange: {
-            [[AVAudioSession sharedInstance] overrideOutputAudioPort:([self isHeadsetPluggedIn])? AVAudioSessionPortOverrideNone :AVAudioSessionPortOverrideSpeaker error:&error];
-        }
-            break;
-            
-        case AVAudioSessionRouteChangeReasonOldDeviceUnavailable: {
-            [[AVAudioSession sharedInstance] overrideOutputAudioPort: AVAudioSessionPortOverrideSpeaker error:&error];
-        }
-            break;
-            
-        default:
-            break;
-    }
-}
-
-- (BOOL)isHeadsetPluggedIn {
-    AVAudioSessionRouteDescription* route = [[AVAudioSession sharedInstance] currentRoute];
-    for (AVAudioSessionPortDescription* desc in [route outputs]) {
-        if ([[desc portType] isEqualToString:AVAudioSessionPortHeadphones])
-            return YES;
-    }
-    return NO;
+- (void)handleAudioRouteChange:(NSNotification *) notification
+{
+	AVAudioSessionRouteChangeReason reasonValue = [notification.userInfo[@"AVAudioSessionRouteChangeReasonKey"] unsignedIntegerValue];
+	AVAudioSessionRouteDescription* currentRoute = [AVAudioSession sharedInstance].currentRoute;
+	if([currentRoute.outputs count] > 0 && (reasonValue == AVAudioSessionRouteChangeReasonOverride || reasonValue == AVAudioSessionRouteChangeReasonCategoryChange)) {
+		AVAudioSessionPortDescription *output = currentRoute.outputs.firstObject;
+		
+		for (id callbackId in self.eventCallbacks[@"speaker"]) {
+			CDVPluginResult* pluginResult = nil;
+			pluginResult = [CDVPluginResult resultWithStatus:CDVCommandStatus_OK messageAsBool:[output.portType isEqual: @"Speaker"]];
+			[pluginResult setKeepCallbackAsBool:YES];
+			[self.commandDelegate sendPluginResult:pluginResult callbackId:callbackId];
+		}
+	}
 }
 
 @end
